@@ -156,7 +156,6 @@ if uploaded_files:
                                     mu = np.mean(data_sup)
                                     sigma = np.std(data_sup, ddof=1)
                                     
-                                    # MENGEMBALIKAN PERHITUNGAN MIN MAX
                                     d_min = np.min(data_sup)
                                     d_max = np.max(data_sup)
                                     
@@ -167,26 +166,29 @@ if uploaded_files:
                                     
                                     st.markdown(f"**🔹 {sup}** (Sampel n={len(data_sup)})")
                                     
-                                    # MENGEMBALIKAN KARTU MIN MAX (DIBUAT JADI 6 KOLOM AGAR MUAT)
-                                    kpi1, kpi2, m1, m2, m3, m4 = st.columns(6)
-                                    kpi1.metric("Cp", f"{Cp:.2f}")
+                                    # --- MODIFIKASI 1: METRIK DIBUAT 2 BARIS ---
+                                    col_m1, col_m2, col_m3 = st.columns(3)
+                                    col_m4, col_m5, col_m6 = st.columns(3)
+                                    
+                                    col_m1.metric("Cp", f"{Cp:.2f}")
                                     
                                     delta_val = Cpk - TARGET_CPK
                                     warnanya = "normal" if Cpk >= TARGET_CPK else "inverse"
-                                    # Teks 'vs Tgt' dipendekkan agar rapi di layar kecil
-                                    kpi2.metric("Cpk", f"{Cpk:.2f}", delta=f"{delta_val:.2f} vs Target", delta_color=warnanya)
+                                    col_m2.metric("Cpk", f"{Cpk:.2f}", delta=f"{delta_val:.2f} vs Target", delta_color=warnanya)
                                     
-                                    m1.metric("Mean", f"{mu:.2f}")
-                                    m2.metric("Std Dev", f"{sigma:.2f}")
-                                    m3.metric("Min", f"{d_min:.2f}")
-                                    m4.metric("Max", f"{d_max:.2f}")
+                                    col_m3.metric("Mean", f"{mu:.2f}")
+                                    
+                                    col_m4.metric("Std Dev", f"{sigma:.2f}")
+                                    col_m5.metric("Min", f"{d_min:.2f}")
+                                    col_m6.metric("Max", f"{d_max:.2f}")
                                     
                                     st.markdown("---")
                                 else:
                                     st.warning(f"Data {sup} tidak cukup (n={len(data_sup)})")
 
                         # --- BAGIAN 4: TABS VISUALISASI ---
-                        tab1, tab2 = st.tabs(["📊 Histogram Komparasi", "📈 Run Chart Komparasi"])
+                        # --- MODIFIKASI 2: MENAMBAH TABS "Tren Cpk Harian" ---
+                        tab1, tab2, tab3 = st.tabs(["📊 Histogram Komparasi", "📈 Run Chart Komparasi", "📅 Tren Cpk Harian"])
                         colors = ['#3498db', '#e74c3c', '#2ecc71', '#9b59b6', '#f1c40f', '#e67e22', '#1abc9c']
                         
                         with tab1:
@@ -212,7 +214,7 @@ if uploaded_files:
                             
                             handles, labels = ax1.get_legend_handles_labels()
                             by_label = dict(zip(labels, handles))
-                            ax1.legend(by_label.values(), by_label.keys(), loc='upper right', bbox_to_anchor=(1.15, 1))
+                            ax1.legend(by_label.values(), by_label.keys(), loc='upper left', bbox_to_anchor=(1.02, 1), fontsize='small')
                             st.pyplot(fig1)
 
                         with tab2:
@@ -236,15 +238,81 @@ if uploaded_files:
                             if target:
                                 ax2.axhline(target, color='green', linestyle='-', alpha=0.5, label='Target')
 
-                            ax2.set_xlabel("Nomor Sampel")
+                            ax2.set_xlabel("Sampel")
                             ax2.set_ylabel(measure_col)
                             ax2.set_title(f"Trend Data: {measure_col}")
                             
                             handles, labels = ax2.get_legend_handles_labels()
                             by_label = dict(zip(labels, handles))
-                            ax2.legend(by_label.values(), by_label.keys(), loc='upper right', bbox_to_anchor=(1.15, 1))
+                            ax2.legend(by_label.values(), by_label.keys(), loc='upper left', bbox_to_anchor=(1.02, 1), fontsize='small')
                             ax2.grid(True, linestyle=':', alpha=0.5)
                             st.pyplot(fig2)
+
+                        # --- MODIFIKASI 3: LOGIKA TREN HARIAN ---
+                        with tab3:
+                            st.markdown("#### 📅 Breakdown Kapabilitas Berdasarkan Tanggal")
+                            st.caption("Detail performa statistik per tanggal")
+                            
+                            daily_records = []
+                            available_dates = sorted(df_final['Source_Date'].unique())
+                            
+                            for sup in sel_sups:
+                                for d in available_dates:
+                                    d_data = df_final[(df_final['Supplier'] == sup) & (df_final['Source_Date'] == d)][measure_col].dropna()
+                                    
+                                    if len(d_data) > 1:
+                                        mu_d = np.mean(d_data)
+                                        sig_d = np.std(d_data, ddof=1)
+                                        Cpu_d = (usl - mu_d) / (3 * sig_d)
+                                        Cpl_d = (mu_d - lsl) / (3 * sig_d)
+                                        Cpk_d = min(Cpu_d, Cpl_d)
+                                        
+                                        daily_records.append({
+                                            "Tanggal": d,
+                                            "Supplier": sup,
+                                            "Cpk": Cpk_d,
+                                            "Mean": mu_d,
+                                            "Std Dev": sig_d,
+                                            "Min": np.min(d_data),
+                                            "Max": np.max(d_data),
+                                            "Sampel (n)": len(d_data)
+                                        })
+                            
+                            if daily_records:
+                                df_daily = pd.DataFrame(daily_records)
+                                
+                                st.dataframe(
+                                    df_daily.style.format({
+                                        "Cpk": "{:.2f}",
+                                        "Mean": "{:.2f}",
+                                        "Std Dev": "{:.2f}",
+                                        "Min": "{:.2f}",
+                                        "Max": "{:.2f}"
+                                    }).background_gradient(subset=['Cpk'], cmap='RdYlGn', vmin=0.5, vmax=2.0),
+                                    use_container_width=True
+                                )
+                                
+                                if len(available_dates) > 1:
+                                    st.markdown("#### 📈 Pergerakan Nilai Cpk")
+                                    fig3, ax3 = plt.subplots(figsize=(10, 4))
+                                    
+                                    for i, sup in enumerate(sel_sups):
+                                        sup_daily = df_daily[df_daily['Supplier'] == sup].sort_values('Tanggal')
+                                        if not sup_daily.empty:
+                                            c = colors[i % len(colors)]
+                                            ax3.plot(sup_daily['Tanggal'], sup_daily['Cpk'], marker='o', linestyle='-', color=c, label=sup, linewidth=2, markersize=8)
+                                    
+                                    ax3.axhline(TARGET_CPK, color='r', linestyle='--', label=f'Target Cpk ({TARGET_CPK})')
+                                    ax3.set_xlabel("Tanggal")
+                                    ax3.set_ylabel("Nilai Cpk")
+                                    ax3.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize='small')
+                                    ax3.grid(True, linestyle=':', alpha=0.6)
+                                    plt.xticks(rotation=45) 
+                                    st.pyplot(fig3)
+                                else:
+                                    st.info("💡 Pilih minimal 2 tanggal di sidebar untuk melihat grafik pergerakan performa.")
+                            else:
+                                st.warning("Data harian tidak cukup untuk dianalisis.")
 
                         # --- BAGIAN 5: LEADERBOARD SUPPLIER ---
                         if len(sel_sups) > 1:
