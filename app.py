@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.stats as stats
 import re
+from datetime import datetime
 
 # --- KONFIGURASI TARGET & BATASAN ---
 TARGET_CPK = 1
@@ -35,8 +36,10 @@ st.sidebar.header("📂 Data Input")
 uploaded_files = st.sidebar.file_uploader(
     "Upload File Excel", 
     type=['xlsx', 'xls'], 
-    accept_multiple_files=True
+    accept_multiple_files=True,
+    help="Drag & Drop folder berisi file Excel ke area ini."
 )
+st.sidebar.caption("💡 **Tips:** Anda bisa langsung men-drag folder utuh ke dalam kotak di atas.")
 
 if uploaded_files:
     all_data_list = []
@@ -75,6 +78,9 @@ if uploaded_files:
 
     if all_data_list:
         master_df = pd.concat(all_data_list, ignore_index=True)
+        
+        # Konversi Source_Date menjadi tipe Datetime Pandas
+        master_df['Source_Date_DT'] = pd.to_datetime(master_df['Source_Date'], errors='coerce')
 
         # --- BAGIAN 2: FILTER BERJENJANG (CASCADING) ---
         st.sidebar.markdown("---")
@@ -109,25 +115,41 @@ if uploaded_files:
             else:
                 df_sup_all = df_mc_all[df_mc_all['Supplier'].isin(sel_sups)]
                 
-                # FILTER 3: TANGGAL 
-                dates = sorted(df_sup_all['Source_Date'].unique())
-                sel_dates = st.sidebar.multiselect(
-                    "Tanggal", 
-                    options=dates, 
-                    default=[],
-                    help=f"Material {sel_mc} dari supplier {', '.join(sel_sups)} diambil pada tanggal-tanggal berikut."
+                # FILTER 3: PERIODE TANGGAL 
+                min_date = df_sup_all['Source_Date_DT'].min().date()
+                max_date = df_sup_all['Source_Date_DT'].max().date()
+                
+                sel_dates = st.sidebar.date_input(
+                    "Periode Waktu", 
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date,
+                    help="Klik 1 hari untuk harian, atau seret periode untuk mingguan/bulanan."
                 )
                 
-                if not sel_dates:
-                    st.info("👈 Pilih **Tanggal** pengamatan di sidebar.")
+                # --- LOGIKA BARU: MENGIZINKAN KLIK TANGGAL 1 KALI ---
+                if len(sel_dates) == 0:
+                    st.info("👈 Silakan pilih tanggal pada kalender di sidebar.")
                 else:
+                    if len(sel_dates) == 1:
+                        # Jika user hanya klik 1 hari, anggap awal dan akhir di hari yang sama
+                        start_date = sel_dates[0]
+                        end_date = sel_dates[0]
+                    else:
+                        start_date, end_date = sel_dates
+                    
                     # --- KETIGA FILTER SUDAH TERISI -> TAMPILKAN DASHBOARD ---
-                    df_final = df_sup_all[df_sup_all['Source_Date'].isin(sel_dates)]
+                    mask_date = (df_sup_all['Source_Date_DT'].dt.date >= start_date) & (df_sup_all['Source_Date_DT'].dt.date <= end_date)
+                    df_final = df_sup_all[mask_date]
 
                     st.write(f"### Analisis Detail & Komparasi: {sel_mc}")
+                    if start_date == end_date:
+                        st.caption(f"Periode Waktu (Harian): **{start_date.strftime('%d %b %Y')}**")
+                    else:
+                        st.caption(f"Periode Waktu : **{start_date.strftime('%d %b %Y')}** hingga **{end_date.strftime('%d %b %Y')}**")
                     
                     numeric_cols = df_final.select_dtypes(include=[np.number]).columns.tolist()
-                    exclude = ['Source_File', 'Material_Code', 'Supplier', 'No', 'Urutan']
+                    exclude = ['Source_File', 'Material_Code', 'Supplier', 'No', 'Urutan', 'Source_Date_DT']
                     numeric_cols = [c for c in numeric_cols if c not in exclude]
 
                     if numeric_cols:
@@ -144,11 +166,11 @@ if uploaded_files:
                                 usl = st.number_input("USL", value=float(s_max*1.1), format="%.4f")
                                 target = st.number_input("Target", value=float((lsl+usl)/2), format="%.4f")
                             else:
-                                st.error("Data pada tanggal ini kosong.")
+                                st.error("Data pada tanggal ini kosong. Tidak ada produksi dari supplier yang dipilih.")
                                 st.stop()
                         
                         with col_param2:
-                            st.markdown("##### 🏆 Perbandingan Kapabilitas Supplier")
+                            st.markdown("##### 🏆 Perbandingan Kapabilitas Supplier (Keseluruhan Periode)")
                             for sup in sel_sups:
                                 data_sup = df_final[df_final['Supplier'] == sup][measure_col].dropna()
                                 
@@ -166,7 +188,6 @@ if uploaded_files:
                                     
                                     st.markdown(f"**🔹 {sup}** (Sampel n={len(data_sup)})")
                                     
-                                    # --- MODIFIKASI 1: METRIK DIBUAT 2 BARIS ---
                                     col_m1, col_m2, col_m3 = st.columns(3)
                                     col_m4, col_m5, col_m6 = st.columns(3)
                                     
@@ -184,10 +205,9 @@ if uploaded_files:
                                     
                                     st.markdown("---")
                                 else:
-                                    st.warning(f"Data {sup} tidak cukup (n={len(data_sup)})")
+                                    st.warning(f"Data {sup} tidak cukup di periode ini (n={len(data_sup)})")
 
                         # --- BAGIAN 4: TABS VISUALISASI ---
-                        # --- MODIFIKASI 2: MENAMBAH TABS "Tren Cpk Harian" ---
                         tab1, tab2, tab3 = st.tabs(["📊 Histogram Komparasi", "📈 Run Chart Komparasi", "📅 Tren Cpk Harian"])
                         colors = ['#3498db', '#e74c3c', '#2ecc71', '#9b59b6', '#f1c40f', '#e67e22', '#1abc9c']
                         
@@ -238,7 +258,7 @@ if uploaded_files:
                             if target:
                                 ax2.axhline(target, color='green', linestyle='-', alpha=0.5, label='Target')
 
-                            ax2.set_xlabel("Sampel")
+                            ax2.set_xlabel("Sampel Keseluruhan")
                             ax2.set_ylabel(measure_col)
                             ax2.set_title(f"Trend Data: {measure_col}")
                             
@@ -248,10 +268,9 @@ if uploaded_files:
                             ax2.grid(True, linestyle=':', alpha=0.5)
                             st.pyplot(fig2)
 
-                        # --- MODIFIKASI 3: LOGIKA TREN HARIAN ---
                         with tab3:
                             st.markdown("#### 📅 Breakdown Kapabilitas Berdasarkan Tanggal")
-                            st.caption("Detail performa statistik per tanggal")
+                            st.caption("Detail performa statistik per tanggal selama periode waktu terpilih.")
                             
                             daily_records = []
                             available_dates = sorted(df_final['Source_Date'].unique())
@@ -310,7 +329,7 @@ if uploaded_files:
                                     plt.xticks(rotation=45) 
                                     st.pyplot(fig3)
                                 else:
-                                    st.info("💡 Pilih minimal 2 tanggal di sidebar untuk melihat grafik pergerakan performa.")
+                                    st.info("💡 Selama Periode waktu hanya 1 hari pengiriman. Perlu minimal 2 hari untuk menggambar grafik pergerakan.")
                             else:
                                 st.warning("Data harian tidak cukup untuk dianalisis.")
 
@@ -318,7 +337,7 @@ if uploaded_files:
                         if len(sel_sups) > 1:
                             st.write("---")
                             st.header(f"🥇 Peringkat Komparasi Supplier: {sel_mc}")
-                            st.caption("Tabel perbandingan atau peringkat supplier yang diurutkan dari nilai Cpk.")
+                            st.caption("Tabel perbandingan supplier selama periode waktu berdasarkan nilai Cpk terbaik.")
                             
                             leaderboard_data = []
                             
