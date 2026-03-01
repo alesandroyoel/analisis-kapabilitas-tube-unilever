@@ -4,6 +4,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import scipy.stats as stats
 import re
+import calendar
 from datetime import datetime
 
 # --- KONFIGURASI TARGET & BATASAN ---
@@ -49,32 +50,51 @@ if uploaded_files:
         for file in uploaded_files:
             try:
                 file_date = parse_filename_date(file.name)
-                xls = pd.read_excel(file, sheet_name=None, header=2)
+                xls = pd.ExcelFile(file)
                 
-                for sheet_name, df in xls.items():
+                for sheet_name in xls.sheet_names:
                     mc, supplier = parse_sheet_info(sheet_name)
+                    
+                    # 1. Jika nama sheet tidak ada underscore (misal: "Form1", "List"), Lewati!
                     if mc is None: 
-                        skipped_sheets.append(f"{file.name} - {sheet_name}")
+                        skipped_sheets.append(f"{file.name} - '{sheet_name}' (Format nama tidak sesuai)")
                         continue 
                     
-                    df = df.dropna(how='all', axis=1)
-                    df['Source_Date'] = file_date
-                    df['Source_File'] = file.name
-                    df['Material_Code'] = mc
-                    df['Supplier'] = supplier
-                    
-                    if 'No' in df.columns:
-                        df['Urutan'] = df['No']
-                    else:
-                        df['Urutan'] = range(1, len(df) + 1)
+                    # --- PERBAIKAN: Jaring pengaman diletakkan khusus untuk MASING-MASING SHEET ---
+                    try:
+                        df = pd.read_excel(xls, sheet_name=sheet_name, header=2)
                         
-                    all_data_list.append(df)
+                        # Jika sheetnya berhasil dibaca tapi ternyata isinya kosong melompong
+                        if df.empty:
+                            skipped_sheets.append(f"{file.name} - '{sheet_name}' (Data kosong)")
+                            continue
+                            
+                        df = df.dropna(how='all', axis=1)
+                        df['Source_Date'] = file_date
+                        df['Source_File'] = file.name
+                        df['Material_Code'] = mc
+                        df['Supplier'] = supplier
+                        
+                        if 'No' in df.columns:
+                            df['Urutan'] = df['No']
+                        else:
+                            df['Urutan'] = range(1, len(df) + 1)
+                            
+                        all_data_list.append(df)
+                        
+                    except Exception as sheet_error:
+                        # Jika 1 sheet ini error (misal baris kurang dari 3), catat dan abaikan. 
+                        # JANGAN hentikan file secara keseluruhan!
+                        skipped_sheets.append(f"{file.name} - '{sheet_name}' (Gagal dibaca: Baris tidak cukup/Error format)")
+                        
             except Exception as e:
-                st.error(f"Error file {file.name}: {e}")
+                # Ini hanya akan menyala jika file Excel-nya sendiri yang rusak/corrupt
+                st.error(f"Error membaca struktur file {file.name}: {e}")
 
     if skipped_sheets:
-        with st.expander("⚠️ Beberapa sheet dilewati (Format nama tidak sesuai)"):
-            st.write(skipped_sheets)
+        with st.expander("⚠️ Beberapa sheet dilewati (Klik untuk melihat)"):
+            for skip in skipped_sheets:
+                st.write(f"- {skip}")
 
     if all_data_list:
         master_df = pd.concat(all_data_list, ignore_index=True)
@@ -115,19 +135,18 @@ if uploaded_files:
             else:
                 df_sup_all = df_mc_all[df_mc_all['Supplier'].isin(sel_sups)]
                 
-                # FILTER 3: PERIODE TANGGAL 
+                # FILTER 3: RENTANG TANGGAL 
                 min_date = df_sup_all['Source_Date_DT'].min().date()
                 max_date = df_sup_all['Source_Date_DT'].max().date()
                 
                 sel_dates = st.sidebar.date_input(
-                    "Periode Waktu", 
+                    "Rentang Waktu", 
                     value=(min_date, max_date),
                     min_value=min_date,
                     max_value=max_date,
-                    help="Klik 1 hari untuk harian, atau seret periode untuk mingguan/bulanan."
+                    help="Klik 1 hari untuk harian, atau seret rentang untuk mingguan/bulanan."
                 )
                 
-                # --- LOGIKA BARU: MENGIZINKAN KLIK TANGGAL 1 KALI ---
                 if len(sel_dates) == 0:
                     st.info("👈 Silakan pilih tanggal pada kalender di sidebar.")
                 else:
@@ -143,11 +162,32 @@ if uploaded_files:
                     df_final = df_sup_all[mask_date]
 
                     st.write(f"### Analisis Detail & Komparasi: {sel_mc}")
-                    if start_date == end_date:
-                        st.caption(f"Periode Waktu (Harian): **{start_date.strftime('%d %b %Y')}**")
-                    else:
-                        st.caption(f"Periode Waktu : **{start_date.strftime('%d %b %Y')}** hingga **{end_date.strftime('%d %b %Y')}**")
                     
+                    # --- LOGIKA DETEKSI PERIODE WAKTU ---
+                    delta_days = (end_date - start_date).days
+                    last_day_of_month = calendar.monthrange(end_date.year, end_date.month)[1]
+                    nama_bulan = ["", "Januari", "Februari", "Maret", "April", "Mei", "Juni", "Juli", "Agustus", "September", "Oktober", "November", "Desember"]
+
+                    if start_date == end_date:
+                        # HARIAN: Tanggal awal dan akhir sama persis
+                        st.caption(f"Periode Waktu (Harian): **{start_date.strftime('%d %b %Y')}**")
+                        
+                    elif start_date.year == end_date.year and start_date.month == 1 and start_date.day == 1 and end_date.month == 12 and end_date.day == 31:
+                        # TAHUNAN: 1 Januari s/d 31 Desember di tahun yang sama
+                        st.caption(f"Periode Waktu (Tahunan): **Tahun {start_date.year}**")
+                        
+                    elif start_date.year == end_date.year and start_date.month == end_date.month and start_date.day == 1 and end_date.day == last_day_of_month:
+                        # BULANAN: Tanggal 1 s/d Tanggal terakhir di bulan dan tahun yang sama
+                        st.caption(f"Periode Waktu (Bulanan): **{nama_bulan[start_date.month]} {start_date.year}**")
+                        
+                    elif delta_days == 6 and start_date.weekday() == 0:
+                        # MINGGUAN: Selisih tepat 6 hari (Senin s/d Minggu) DAN start_date adalah hari Senin (0 = Senin di Python)
+                        st.caption(f"Periode Waktu (Mingguan): **{start_date.strftime('%d %b %Y')}** hingga **{end_date.strftime('%d %b %Y')}**")
+                        
+                    else:
+                        # RENTANG KUSTOM: Jika tidak memenuhi syarat di atas (misal: pilih 3 hari, atau 2 bulan)
+                        st.caption(f"Periode Waktu (Rentang Kustom): **{start_date.strftime('%d %b %Y')}** hingga **{end_date.strftime('%d %b %Y')}**")
+
                     numeric_cols = df_final.select_dtypes(include=[np.number]).columns.tolist()
                     exclude = ['Source_File', 'Material_Code', 'Supplier', 'No', 'Urutan', 'Source_Date_DT']
                     numeric_cols = [c for c in numeric_cols if c not in exclude]
@@ -170,7 +210,7 @@ if uploaded_files:
                                 st.stop()
                         
                         with col_param2:
-                            st.markdown("##### 🏆 Perbandingan Kapabilitas Supplier (Keseluruhan Periode)")
+                            st.markdown("##### 🏆 Perbandingan Kapabilitas Supplier")
                             for sup in sel_sups:
                                 data_sup = df_final[df_final['Supplier'] == sup][measure_col].dropna()
                                 
@@ -329,7 +369,7 @@ if uploaded_files:
                                     plt.xticks(rotation=45) 
                                     st.pyplot(fig3)
                                 else:
-                                    st.info("💡 Selama Periode waktu hanya 1 hari pengiriman. Perlu minimal 2 hari untuk menggambar grafik pergerakan.")
+                                    st.info("💡 Selama tanggal terpilih hanya terdapat 1 hari. Perlu minimal 2 hari berbeda untuk menggambar grafik pergerakan.")
                             else:
                                 st.warning("Data harian tidak cukup untuk dianalisis.")
 
